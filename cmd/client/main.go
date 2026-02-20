@@ -2,11 +2,12 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"strconv"
 	"syscall"
-	"time"
 )
 
 func main() {
@@ -18,9 +19,11 @@ func main() {
 		panic("Puerto inválido")
 	}
 
+	customData := []byte(fmt.Sprintf("Hello %02d", rand.Intn(100))) // 8 bytes + 2 chars = 10 bytes, cabe en el Timestamp Option (10 bytes)
+
 	// Sin timezone para ahorrar bytes: 19 chars. Total data = 14+19 = 33 bytes ≤ 38 max
-	ts := time.Now().Format("2006-01-02T15:04:05")
-	customData := []byte("Hello " + ts)
+	//ts := time.Now().Format("2006-01-02T15:04:05")
+	//customData := []byte("Hello ")
 	//customData := []byte("12345678911234567892123456789313336-39") // 32 bytes + 19 chars = 51 bytes > 38 max, se truncará a 38
 
 	err = sendCustomSYN(srcIP, dstIP, uint16(dstPort), customData)
@@ -75,6 +78,27 @@ func buildTCPSYN(srcIP, dstIP net.IP, srcPort, dstPort uint16, opts []byte) []by
 	return buf
 }
 
+// tcpTimestampOption arma Kind=8 Length=10 + TSval(4) + TSecr(4)
+func tcpTimestampOption(tsval, tsecr uint32) []byte {
+	opt := make([]byte, 10)
+	opt[0] = 8
+	opt[1] = 10
+	binary.BigEndian.PutUint32(opt[2:6], tsval)
+	binary.BigEndian.PutUint32(opt[6:10], tsecr)
+	return opt
+}
+
+// packUpTo8BytesInto2xU32: mete hasta 8 bytes en (tsval,tsecr) big-endian.
+// Si data < 8, el resto se rellena con 0.
+func packUpTo8BytesInto2xU32(data []byte) (uint32, uint32) {
+	var b [8]byte
+	copy(b[:], data)
+
+	tsval := binary.BigEndian.Uint32(b[0:4])
+	tsecr := binary.BigEndian.Uint32(b[4:8])
+	return tsval, tsecr
+}
+
 func sendCustomSYN(srcIPStr, dstIPStr string, dstPort uint16, data []byte) error {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_TCP)
 	if err != nil {
@@ -82,9 +106,12 @@ func sendCustomSYN(srcIPStr, dstIPStr string, dstPort uint16, data []byte) error
 	}
 	defer syscall.Close(fd)
 
-	// Opción 253 (experimental): type(1) + length(1) + data
-	opts := []byte{253, byte(2 + len(data))}
-	opts = append(opts, data...)
+	// Kind 8 (Timestamps): 10 bytes fijos
+	tsval, tsecr := packUpTo8BytesInto2xU32(data)
+	opts := tcpTimestampOption(tsval, tsecr)
+
+	// Padding para alinear opciones a 4 bytes: añade 2 NOP (Kind=1)
+	opts = append(opts, 1, 1)
 
 	srcIP := net.ParseIP(srcIPStr).To4()
 	dstIP := net.ParseIP(dstIPStr).To4()
@@ -92,5 +119,6 @@ func sendCustomSYN(srcIPStr, dstIPStr string, dstPort uint16, data []byte) error
 
 	addr := syscall.SockaddrInet4{Port: int(dstPort)}
 	copy(addr.Addr[:], dstIP)
+
 	return syscall.Sendto(fd, packet, 0, &addr)
 }

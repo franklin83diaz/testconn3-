@@ -46,9 +46,8 @@ func main() {
 		}
 
 		fmt.Printf("Paquete SYN recibido de %s:%d\n", packet.NetworkLayer().NetworkFlow().Src().String(), tcp.SrcPort)
-
 		for _, opt := range tcp.Options {
-			if opt.OptionType == 253 {
+			if opt.OptionType == 8 {
 				fmt.Printf("Datos recibidos: %s\n", string(opt.OptionData))
 			}
 		}
